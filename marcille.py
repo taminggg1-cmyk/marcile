@@ -2806,8 +2806,10 @@ class Marcille:
             return
         if self.brain.has_gemini():
             out, err = self.brain.gemini_tools_chat(text, self._gemini_dispatch)
-            self.root.after(0, lambda: self._voice_reply_done(out, err))
-            return
+            if out and not err:
+                self.root.after(0, lambda: self._voice_reply_done(out, None))
+                return
+            # Gemini failed (e.g. daily-quota 429) -> fall back to local gemma below
         intent = None
         if self.cfg.get("local_intent", True) and self.brain.ollama_ready():
             intent = self.brain.parse_intent(text, cpu=bool(self.cfg.get("miku")))
@@ -3087,8 +3089,10 @@ class Marcille:
             return
         if self.brain.has_gemini():
             out, err = self.brain.gemini_tools_chat(text, self._gemini_dispatch)
-            self.root.after(0, lambda: self._chat_reply(out, err))
-            return
+            if out and not err:
+                self.root.after(0, lambda: self._chat_reply(out, None))
+                return
+            # Gemini failed (e.g. daily-quota 429) -> fall back to local gemma below
         intent = None
         if self.cfg.get("local_intent", True) and self.brain.ollama_ready():
             intent = self.brain.parse_intent(text, cpu=bool(self.cfg.get("miku")))
