@@ -76,49 +76,36 @@ const JUDGE_SCHEMA = {
   },
 }
 const SPEC_SCHEMA = {
-  type: 'object', required: ['summary', 'changes', 'acceptanceCriteria', 'testChecks'],
+  type: 'object', required: ['summary', 'plan', 'acceptanceCriteria'],
   properties: {
-    summary: { type: 'string' },
-    behavior: { type: 'string', description: 'exact user-visible behavior' },
-    changes: { type: 'array', items: {
-      type: 'object', required: ['file', 'where', 'what'],
-      properties: { file: { type: 'string' }, where: { type: 'string' }, what: { type: 'string' } } },
-    },
-    acceptanceCriteria: { type: 'array', items: { type: 'string' } },
-    testChecks: { type: 'array', items: { type: 'string' }, description: 'what the smoke test should confirm' },
+    summary: { type: 'string', description: 'one-sentence summary of the change' },
+    plan: { type: 'string', description: 'the COMPLETE implementation plan as one plain-text/markdown string: every function/region to change and exactly what to do, in order. Self-contained — the coder needs nothing else.' },
+    acceptanceCriteria: { type: 'array', items: { type: 'string' }, description: '4-8 short, checkable bullet criteria' },
   },
 }
 const CODE_SCHEMA = {
-  type: 'object', required: ['filesTouched', 'summary', 'compileOk'],
+  type: 'object', required: ['summary', 'compileOk'],
   properties: {
+    summary: { type: 'string', description: 'what was implemented' },
     filesTouched: { type: 'array', items: { type: 'string' } },
-    summary: { type: 'string' },
     compileOk: { type: 'boolean', description: 'true ONLY if py_compile actually passed' },
-    compileOutput: { type: 'string' },
     notes: { type: 'string', description: 'anything the auditor should double-check' },
   },
 }
 const AUDIT_SCHEMA = {
-  type: 'object', required: ['bugs', 'matchesSpec', 'compileOk', 'testsOk', 'verdict'],
+  type: 'object', required: ['verdict', 'compileOk', 'testsOk', 'findings'],
   properties: {
-    bugs: { type: 'array', items: {
-      type: 'object', required: ['severity', 'where', 'description'],
-      properties: {
-        severity: { type: 'string', enum: ['critical', 'major', 'minor'] },
-        where: { type: 'string' }, description: { type: 'string' }, fix: { type: 'string' },
-      } } },
-    matchesSpec: { type: 'boolean' },
-    compileOk: { type: 'boolean' },
-    testsOk: { type: 'boolean', description: 'did test_marcille.py print HARNESS_OK' },
     verdict: { type: 'string', enum: ['pass', 'needs-fix'] },
+    compileOk: { type: 'boolean', description: 'did py_compile pass' },
+    testsOk: { type: 'boolean', description: 'did test_marcille.py print HARNESS_OK' },
+    findings: { type: 'string', description: 'every real bug as plain text — each with severity + location + concrete fix; "none" if truly clean' },
   },
 }
 const VERIFY_SCHEMA = {
-  type: 'object', required: ['startedClean', 'behaviorPresent', 'verdict', 'evidence'],
+  type: 'object', required: ['verdict', 'evidence'],
   properties: {
-    startedClean: { type: 'boolean', description: 'app launched without crashing' },
-    behaviorPresent: { type: 'boolean', description: 'the new feature is actually present/working' },
     verdict: { type: 'string', enum: ['shipped', 'failed'] },
+    startedClean: { type: 'boolean', description: 'app launched without crashing' },
     evidence: { type: 'string' },
   },
 }
@@ -165,7 +152,7 @@ log(`Judge chose: ${choice.chosen}`)
 
 // ---------- 4. Spec ----------
 phase('Spec')
-const spec = need(await agent(`You are THE SPEC WRITER. Turn the chosen approach into a precise, testable spec a coder can implement without guessing.
+const spec = need(await agent(`You are THE SPEC WRITER. Turn the chosen approach into a precise, buildable spec.
 
 FEATURE: "${feature}"
 CHOSEN APPROACH: ${choice.chosen}
@@ -174,26 +161,33 @@ FOLD IN: ${choice.graft || '(nothing extra)'}
 ACCEPTANCE HINTS: ${choice.acceptanceHints}
 ${ENV}
 
-READ marcille.py as needed. Produce: a short summary, the exact user-visible behavior, the concrete list of code changes (file + where + what), testable acceptance criteria, and what the headless smoke test should confirm. Be specific enough that two different coders would produce nearly the same result.`,
+The Judge already traced the real code and cited exact line numbers above — lean on it. Read only specific functions in marcille.py if you must confirm a detail; do NOT re-read the whole ~4000-line file.
+
+Output exactly three fields:
+- summary: one sentence.
+- plan: ONE plain-text/markdown string with the COMPLETE implementation plan — every function/region to change and exactly what to do there, in order. Put ALL the detail here; make it self-contained.
+- acceptanceCriteria: 4-8 short checkable bullets.
+Keep the JSON small and clean — the detail lives inside the single 'plan' string.`,
   { label: 'spec', phase: 'Spec', schema: SPEC_SCHEMA }), 'Spec')
 log(`Spec ready: ${spec.summary}`)
 
 // ---------- 5. Code ----------
 phase('Code')
-const code = need(await agent(`You are THE CODER. Implement this spec by editing marcille.py (and any other files the spec names).
+const code = need(await agent(`You are THE CODER. Implement this plan by editing marcille.py (and any other files it names).
 
 FEATURE: "${feature}"
-SPEC: ${spec.summary}
-BEHAVIOR: ${spec.behavior || ''}
-CHANGES:
-${(spec.changes || []).map(c => `- ${c.file} @ ${c.where}: ${c.what}`).join('\n')}
+SUMMARY: ${spec.summary}
+
+IMPLEMENTATION PLAN:
+${spec.plan}
+
 ACCEPTANCE CRITERIA:
 ${(spec.acceptanceCriteria || []).map(c => `- ${c}`).join('\n')}
 ${ENV}
 
-Implement cleanly, matching surrounding style. THEN run the compile-check and fix any syntax errors until it compiles. Report files touched, what you implemented, and the compile result. Do NOT set compileOk true unless py_compile actually succeeded.`,
+Be surgical — Read/grep only the functions named in the plan; don't read the whole file. Implement cleanly, matching surrounding style. THEN run the compile-check and fix any syntax errors until it compiles. Report what you implemented and the compile result. Do NOT set compileOk true unless py_compile actually succeeded.`,
   { label: 'coder', phase: 'Code', schema: CODE_SCHEMA }), 'Coder')
-log(`Coder done. compileOk=${code.compileOk}. Files: ${(code.filesTouched || []).join(', ')}`)
+log(`Coder done. compileOk=${code.compileOk}`)
 
 // ---------- 6. Adversarial audit loop ----------
 phase('Audit')
@@ -219,25 +213,24 @@ Steps: read the current diff (git -C "${PROJECT}" diff), read the changed code i
       { label: `audit-r${round}-${L.tag}`, phase: 'Audit', schema: AUDIT_SCHEMA })
   ))).filter(Boolean)
 
-  const bugs = audits.flatMap(a => a.bugs || [])
-  const serious = bugs.filter(b => b.severity === 'critical' || b.severity === 'major')
   const compileOk = audits.length > 0 && audits.every(a => a.compileOk)
   const testsOk = audits.length > 0 && audits.every(a => a.testsOk)
-  const needsFix = audits.some(a => a.verdict === 'needs-fix') || serious.length > 0 || !compileOk || !testsOk
+  const needsFix = audits.length === 0 || audits.some(a => a.verdict === 'needs-fix') || !compileOk || !testsOk
+  const findings = audits.map(a => `[verdict: ${a.verdict} | compileOk: ${a.compileOk} | testsOk: ${a.testsOk}]\n${a.findings}`).join('\n\n')
 
   if (!needsFix) { clear = true; log(`Audit round ${round}: clean`); break }
-  log(`Audit round ${round}: ${serious.length} serious / ${bugs.length} total bugs -> fixing`)
+  log(`Audit round ${round}: needs-fix -> fixing`)
 
-  const fix = await agent(`You are THE FIXER. Fix every bug below in marcille.py, then re-verify.
+  const fix = await agent(`You are THE FIXER. Fix every real bug the auditors found in marcille.py, then re-verify.
 
 FEATURE: "${feature}"
-BUGS:
-${bugs.map(b => `- [${b.severity}] ${b.where}: ${b.description}${b.fix ? ` (suggested: ${b.fix})` : ''}`).join('\n')}
+AUDITOR FINDINGS:
+${findings}
 ${ENV}
 
 Fix them properly (no band-aids that merely hide the symptom). THEN run the compile-check and the headless smoke test (must print HARNESS_OK). Report what you changed and the compile result (compileOk only if py_compile actually passed).`,
     { label: `fix-r${round}`, phase: 'Audit', schema: CODE_SCHEMA })
-  fixes.push({ round, bugCount: bugs.length, fix })
+  fixes.push({ round })
 }
 if (!clear) log(`Audit did not fully converge after ${round} rounds — will flag in the report.`)
 
@@ -256,7 +249,7 @@ Steps:
 3. Judge whether the new behavior is actually present, as far as is confirmable without a human watching (process alive + smoke test + code path reachable + any log/file side effects). Note anything only a human can confirm visually.
 4. Leave Marcille running (the user wants to see it).
 
-Report startedClean, behaviorPresent, verdict (shipped/failed), and the concrete evidence you observed.`,
+Report verdict (shipped/failed), startedClean, and the concrete evidence you observed.`,
   { label: 'verify', phase: 'Verify', schema: VERIFY_SCHEMA }), 'Verify')
 log(`Verify: ${verify.verdict} (cleanStart=${verify.startedClean})`)
 
@@ -279,7 +272,7 @@ return {
   filesTouched: code.filesTouched,
   auditRounds: round,
   auditConverged: clear,
-  bugsFixed: fixes.reduce((n, f) => n + (f.bugCount || 0), 0),
+  fixRounds: fixes.length,
   verify: verify.verdict,
   cleanStart: verify.startedClean,
   evidence: verify.evidence,
