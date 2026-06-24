@@ -1510,19 +1510,30 @@ def clean_spoken(text):
     # 3) remove robotic, source-framing openers — ANCHORED to start, and ONLY
     #    when more text follows (require trailing word chars). Case-insensitive.
     openers = [
-        r"in\s+public\s+opinion[,:]?\s+",
-        r"according\s+to\s+(the\s+)?(search\s+results|sources|the\s+web|the\s+internet)[,:]?\s+",
-        r"based\s+on\s+the\s+(search\s+)?results[,:]?\s+",
-        r"the\s+search\s+results\s+(say|show|indicate|suggest)[,:]?\s+",
-        r"summary\s*:\s+",
-        r"as\s+an\s+ai\s+(language\s+model)?[,:]?\s+",
-        r"(well|so|okay|ok|sure)[,]\s+(?=\w)",
+        r"in\s+(the\s+|my\s+|your\s+|a\s+)?(public|popular|common|general|widespread|broad)\s+opinion[,:\-]?\s+",
+        r"according\s+to\s+(the\s+)?(search\s+results|sources?|the\s+web|the\s+internet|wikipedia|public\s+opinion|reports?)[,:\-]?\s+",
+        r"based\s+on\s+(the\s+)?(search\s+)?results[,:\-]?\s+",
+        r"the\s+search\s+results\s+(say|show|indicate|suggest)[,:\-]?\s+",
+        r"(it\s+is|it's)\s+(widely|generally|commonly|often)\s+(believed|known|thought|held|said|reported)(\s+that)?[,:\-]?\s+",
+        r"sources?\s+(say|state|report|indicate|suggest)[,:\-]?\s+",
+        r"summary\s*[:\-]\s+",
+        r"as\s+an\s+ai(\s+language\s+model)?[,:\-]?\s+",
+        r"(well|so|okay|ok|sure|now|right|hmm|oh)[,]\s+",
     ]
-    for pat in openers:
-        new = re.sub(r"(?i)^\s*" + pat + r"(?=\S)", "", t, count=1)
-        if new != t and new.strip():     # only accept if something remains
-            t = new
-            break                         # strip at most ONE opener
+    # strip ALL stacked leading openers, not just the first (e.g. "Well, in public opinion,")
+    for _round in range(4):
+        hit = False
+        for pat in openers:
+            new = re.sub(r"(?i)^\s*" + pat + r"(?=\S)", "", t, count=1)
+            if new != t and new.strip():     # only accept if something remains
+                t, hit = new, True
+                break
+        if not hit:
+            break
+    # drop a leftover leading separator and recapitalise the first letter
+    t = re.sub(r"^\s*[\-–—:,;]\s+", "", t)
+    if t[:1].islower():
+        t = t[:1].upper() + t[1:]
     # 4) collapse whitespace / blank lines
     t = re.sub(r"[ \t]+", " ", t)
     t = re.sub(r"\n{2,}", "\n", t).strip()
@@ -2352,7 +2363,7 @@ class Marcille:
         "command prompt": "cmd", "cmd": "cmd", "terminal": "wt", "powershell": "powershell",
         "task manager": "taskmgr", "settings": "ms-settings:", "calendar": "outlookcal:",
         "camera": "microsoft.windows.camera:", "snipping tool": "ms-screenclip:",
-        "spotify": "spotify", "discord": "discord",
+        "spotify": "Spotify.exe", "discord": "discord",
         "chrome": "chrome", "edge": "msedge", "firefox": "firefox",
         "word": "winword", "excel": "excel", "powerpoint": "powerpnt",
     }
@@ -3068,6 +3079,11 @@ class Marcille:
         reply = self.quick_skill(text)
         if reply:
             self.root.after(0, lambda r=reply: self._chat_reply(r, None))
+            return
+        # instant, deterministic "open X" — actually launches it with NO Gemini/quota
+        # needed (mirrors the voice path so chat never falsely refuses or 429s on this)
+        if text.lower().lstrip().startswith(("open ", "launch ", "start ", "bring up ", "run ")):
+            self.root.after(0, lambda: (self.try_open(text), self._chat_done_action("")))
             return
         if self.brain.has_gemini():
             out, err = self.brain.gemini_tools_chat(text, self._gemini_dispatch)
