@@ -1113,9 +1113,15 @@ class Brain:
                 "command in the audio EXACTLY, in whatever language is spoken. Output "
                 "ONLY the words said — no quotes, no translation, no notes. If the audio "
                 "is silent or unintelligible, output the single word NONE.")
-        text, err = self._gemini(
-            sysp, [{"role": "user", "text": "Transcribe this audio."}],
-            audio=[("audio/wav", b64)], max_tokens=120, temp=0.0)
+        msgs = [{"role": "user", "text": "Transcribe this audio."}]
+        text, err = self._gemini(sysp, msgs, audio=[("audio/wav", b64)],
+                                 max_tokens=120, temp=0.0)
+        # free tier is ~20 requests/min; on a momentary 429, wait briefly + retry once
+        if (not text) and err and "429" in err:
+            import time
+            time.sleep(5)
+            text, err = self._gemini(sysp, msgs, audio=[("audio/wav", b64)],
+                                     max_tokens=120, temp=0.0)
         if not text:
             return None
         t = text.strip().strip('"').strip()
