@@ -81,7 +81,12 @@ directions like *sighs*.
 question or wants help (including with their music, reminders, or tasks), genuinely help \
 them — just answer as Marcille would, with personality.
 - Reply with ONLY Marcille's spoken words. Do not narrate, do not explain yourself, do not \
-break character."""
+break character.
+
+When you answer a factual question:
+- Lead with the answer itself, in your own words, as something YOU simply know.
+- NEVER cite sources, search results, "public opinion", or that you looked anything up; don't start with "According to", "Based on", "In public opinion", or "Summary".
+- State the fact first, then optionally one short in-character reaction. Plain spoken words only."""
 
 EMOTIONS = ["normal", "blink", "happy", "panic", "casting", "sleepy",
             "idea", "surprised", "sad", "angry", "crying", "embarrassed", "laughing",
@@ -1035,6 +1040,7 @@ class Brain:
             self.history.append({"role": "assistant", "content": "..."})
             return None, f"My magic fizzled... ({e})"
         reply = (msg or {}).get("content", "").strip()
+        reply = clean_spoken(reply)
         self.history.append({"role": "assistant", "content": reply or "..."})
         return (reply or "(Marcille says nothing.)"), None
 
@@ -1098,6 +1104,7 @@ class Brain:
         text, err = self._gemini(self.sys(system), contents, max_tokens=500, temp=0.75)
         if err or not text:
             return None, err or "Gemini returned nothing"
+        text = clean_spoken(text)
         self.history.append({"role": "user", "content": user_text})
         self.history.append({"role": "assistant", "content": text})
         self.history = self.history[-20:]
@@ -1115,11 +1122,12 @@ class Brain:
                   "sentence, react in character to what they're doing — the app, the "
                   "content, what's going on. Be playful, warm and specific to what you "
                   "actually see. Output ONLY your spoken words.")
-        return self._gemini(self.sys(), [{"role": "user", "text": prompt}],
-                            images=[b64], max_tokens=120, temp=0.6)
+        txt, err = self._gemini(self.sys(), [{"role": "user", "text": prompt}],
+                                images=[b64], max_tokens=120, temp=0.6)
+        return (clean_spoken(txt) if txt else txt), err
 
     def _gemini_parts(self, system, contents, tools=None, timeout=60,
-                      max_tokens=600, temp=0.6):
+                      max_tokens=600, temp=0.6, thinking_budget=0):
         """Lower-level Gemini call that returns the raw response PARTS list (so we can
         see functionCall parts), or (None, error)."""
         import urllib.request, urllib.error
@@ -1127,7 +1135,7 @@ class Brain:
             return None, "no gemini key"
         body = {"contents": contents,
                 "generationConfig": {"temperature": temp, "maxOutputTokens": max_tokens,
-                                     "thinkingConfig": {"thinkingBudget": 0}}}
+                                     "thinkingConfig": {"thinkingBudget": thinking_budget}}}
         if system:
             body["system_instruction"] = {"parts": [{"text": system}]}
         if tools:
@@ -1162,8 +1170,14 @@ class Brain:
                 "\n\nYou can DO things on the user's computer with your tools — open "
                 "apps, control music, set timers and reminders, take notes — and look "
                 "up anything live with web_search. When the user asks you to DO "
-                "something, CALL the matching tool; never just claim you did it. After "
-                "acting, reply with ONE or two short, in-character spoken sentences.")
+                "something, CALL the matching tool; never just claim you did it. "
+                "When you use web_search, the results are just notes for you: answer "
+                "in your OWN words as Marcille, stating the fact directly as something "
+                "you know. NEVER quote, mention, or summarize 'the search results', and "
+                "never open with 'According to', 'Based on', 'In public opinion' or "
+                "'Summary'. After acting or looking something up, reply with ONE or two "
+                "short, in-character spoken sentences — the answer first, then maybe one "
+                "quick reaction.")
         contents = []
         for m in self.history[-20:]:
             if isinstance(m.get("content"), str):
@@ -1171,8 +1185,11 @@ class Brain:
                                  "parts": [{"text": m["content"]}]})
         contents.append({"role": "user", "parts": [{"text": user_text}]})
         final = None
+        grounded_turn = False
         for _ in range(5):
-            parts, err = self._gemini_parts(sysp, contents, tools=self.GEMINI_TOOLS)
+            parts, err = self._gemini_parts(
+                sysp, contents, tools=self.GEMINI_TOOLS,
+                thinking_budget=192 if grounded_turn else 0)
             if err:
                 return None, err
             calls = [p["functionCall"] for p in parts if "functionCall" in p]
@@ -1187,11 +1204,13 @@ class Brain:
                 args = fc.get("args", {}) or {}
                 if name == "web_search":
                     result = self._web_search(args.get("query", ""))[:2500]
+                    grounded_turn = True
                 else:
                     result = dispatch(name, args)
                 resp_parts.append({"functionResponse": {
                     "name": name, "response": {"result": str(result)[:2500]}}})
             contents.append({"role": "user", "parts": resp_parts})
+        final = clean_spoken(final) if final else final
         if not final:
             final = "Done!"
         self.history.append({"role": "user", "content": user_text})
@@ -1310,8 +1329,9 @@ class Brain:
             for i in range(min(5, max(len(titles), len(snips)))):
                 t = clean(titles[i]) if i < len(titles) else ""
                 s = clean(snips[i]) if i < len(snips) else ""
-                if t or s:
-                    out.append(f"- {t}: {s}")
+                fact = s or t
+                if fact:
+                    out.append("- " + fact)
         except Exception:
             pass
         # DuckDuckGo Instant Answer API — adds an authoritative summary when present
@@ -1322,7 +1342,7 @@ class Brain:
                 urllib.request.Request(u, headers=ua), timeout=15).read())
             abs_ = (j.get("AbstractText") or "").strip()
             if abs_:
-                out.insert(0, "Summary: " + abs_)
+                out.insert(0, "- " + abs_)
         except Exception:
             pass
         return "\n".join(out) if out else "(no results found)"
@@ -1400,11 +1420,13 @@ class Brain:
                 context = ""
         grounded = context and not context.startswith("(no results")
         if grounded:
-            sysp = (self.sys() + "\n\nYou just looked this up online. Using ONLY the "
-                    "search results below, answer the question in ONE or two short, "
-                    "in-character spoken sentences. Be specific — give the actual fact, "
-                    "number or name. If the results don't contain the answer, say you "
-                    "couldn't find it.\n\nSearch results:\n" + context[:3000])
+            sysp = (self.sys() + "\n\nYou just looked this up; the notes below are for "
+                    "YOUR eyes only. Answer in ONE or two short, in-character spoken "
+                    "sentences, stating the actual fact, number or name directly as "
+                    "something you know. Do NOT mention the notes, sources or that you "
+                    "searched; never start with 'According to', 'Based on', 'In public "
+                    "opinion' or 'Summary'. If the notes don't contain the answer, say "
+                    "you couldn't find it.\n\nNotes:\n" + context[:3000])
         else:
             sysp = (self.sys() + "\n\nAnswer the question in ONE or two short, "
                     "in-character spoken sentences from your own knowledge. If you are "
@@ -1413,7 +1435,7 @@ class Brain:
             text, err = self._gemini(sysp, [{"role": "user", "text": question}],
                                      max_tokens=300, temp=0.4)
             if text:
-                return text, None
+                return clean_spoken(text), None
             if not self.ollama_ready():
                 return None, err
         try:
@@ -1425,7 +1447,49 @@ class Brain:
         except Exception as e:
             return None, f"I couldn't look that up... ({e})"
         reply = (msg or {}).get("content", "").strip()
+        reply = clean_spoken(reply)
         return (reply or None), (None if reply else "I came up empty on that, sorry!")
+
+
+def clean_spoken(text):
+    """Make any reply safe + natural for TTS: strip markdown/emoji, drop robotic
+    'search result' openers, collapse whitespace. Applied at the return of every
+    spoken path. Conservative: only removes an opener when real sentence follows,
+    so a legit short reply like 'Okay!' is never eaten."""
+    import re
+    if not text:
+        return text
+    t = str(text)
+    # 1) strip markdown emphasis / code markers TTS would read aloud
+    t = t.replace("**", "").replace("__", "")
+    t = re.sub(r"`+", "", t)                    # backticks / code fences
+    t = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", t)  # leading markdown headers
+    t = re.sub(r"(?m)^\s*[-*]\s+", "", t)        # bullet list markers -> plain
+    # asterisk stage directions / leftover single asterisks
+    t = re.sub(r"\*([^*]+)\*", r"\1", t)         # *waves* -> waves
+    t = t.replace("*", "")
+    # 2) strip emoji / pictographs (TTS chokes or says 'smiling face')
+    t = re.sub(r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF←-⇿⬀-⯿️]", "", t)
+    # 3) remove robotic, source-framing openers — ANCHORED to start, and ONLY
+    #    when more text follows (require trailing word chars). Case-insensitive.
+    openers = [
+        r"in\s+public\s+opinion[,:]?\s+",
+        r"according\s+to\s+(the\s+)?(search\s+results|sources|the\s+web|the\s+internet)[,:]?\s+",
+        r"based\s+on\s+the\s+(search\s+)?results[,:]?\s+",
+        r"the\s+search\s+results\s+(say|show|indicate|suggest)[,:]?\s+",
+        r"summary\s*:\s+",
+        r"as\s+an\s+ai\s+(language\s+model)?[,:]?\s+",
+        r"(well|so|okay|ok|sure)[,]\s+(?=\w)",
+    ]
+    for pat in openers:
+        new = re.sub(r"(?i)^\s*" + pat + r"(?=\S)", "", t, count=1)
+        if new != t and new.strip():     # only accept if something remains
+            t = new
+            break                         # strip at most ONE opener
+    # 4) collapse whitespace / blank lines
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r"\n{2,}", "\n", t).strip()
+    return t
 
 
 def emote_for(text):
