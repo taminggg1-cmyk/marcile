@@ -18,12 +18,26 @@ import time
 import difflib
 
 _REAL = sys.stdout
+try:
+    _OUT_FD = _REAL.fileno()
+except Exception:
+    _OUT_FD = 1
 sys.stdout = sys.stderr            # keep library prints off the protocol pipe
 
 
 def emit(msg):
-    _REAL.write(msg + "\n")
-    _REAL.flush()
+    # Write straight to the pipe fd: the buffered text layer raises OSError 22
+    # (EINVAL) on Windows pipes, which was silently killing WAKE/AUDIO delivery
+    # (so spoken commands never reached Marcille to be transcribed).
+    data = (str(msg) + "\n").encode("utf-8", "replace")
+    try:
+        os.write(_OUT_FD, data)
+    except Exception:
+        try:
+            _REAL.write(str(msg) + "\n")
+            _REAL.flush()
+        except Exception:
+            pass
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
