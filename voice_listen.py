@@ -5,7 +5,6 @@ is recorded and transcribed by faster-whisper (accurate, GPU).
 Protocol (clean stdout; library noise goes to stderr):
   READY            -> models loaded, mic open
   WAKE             -> heard the wake word
-  PARTIAL: <text>  -> live (rough) words while you speak
   CMD: <text>      -> locally transcribed command (whisper mode)
   AUDIO: <path>    -> recorded command wav for marcille to transcribe (gemini mode)
   NOCMD            -> woke but nothing usable was said
@@ -149,25 +148,13 @@ def main():
 
     def record_command(max_sec=6.0, silence_sec=1.2, sil_thresh=420):
         frames, started, silent, t0 = [], False, 0.0, time.time()
-        # full-vocab recognizer JUST for live partial captions (whisper still does
-        # the accurate final transcription below) -> user sees words as they speak
-        live = KaldiRecognizer(vosk_model, SR)
-        last_partial = ""
+        # No live word-by-word caption: the small vosk model guessed wrong ~95% of
+        # the time. We just capture audio here (VAD-trimmed); the ACCURATE transcript
+        # comes from Gemini (gemini mode) or whisper (whisper mode) afterwards.
         while time.time() - t0 < max_sec:
             data, _ = stream.read(2000)
-            raw = bytes(data)
-            buf = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+            buf = np.frombuffer(bytes(data), dtype=np.int16).astype(np.float32)
             frames.append(buf)
-            try:
-                if live.AcceptWaveform(raw):
-                    txt = json.loads(live.Result()).get("text", "")
-                else:
-                    txt = json.loads(live.PartialResult()).get("partial", "")
-                if txt and txt != last_partial:
-                    last_partial = txt
-                    emit("PARTIAL: " + txt)
-            except Exception:
-                pass
             rms = float(np.sqrt(np.mean(buf ** 2))) if buf.size else 0.0
             if rms > sil_thresh:
                 started, silent = True, 0.0

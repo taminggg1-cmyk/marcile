@@ -2515,18 +2515,13 @@ class Marcille:
                 self.root.after(0, self._voice_wake)
             elif line == "NOCMD":
                 self.root.after(0, self._voice_nocmd)
-            elif line.startswith("PARTIAL:"):
-                txt = line[8:].strip()
-                if txt:
-                    self.root.after(0, lambda t=txt: self.show_user_caption(
-                        t, live=True, hold=3.0))
             elif line.startswith("CMD:"):
                 txt = line[4:].strip()
                 self.root.after(0, lambda t=txt: self.handle_voice_command(t))
             elif line.startswith("AUDIO:"):
                 path = line[6:].strip()
                 self.root.after(0, lambda: self.show_user_caption(
-                    "…", live=True, hold=8.0))
+                    "transcribing…", live=True, hold=8.0))
                 threading.Thread(target=self._transcribe_voice,
                                  args=(path,), daemon=True).start()
             elif line.startswith("ERR"):
