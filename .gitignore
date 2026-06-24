@@ -13,6 +13,7 @@ rvc_models/
 voice_err.txt
 voice_out.txt
 .marc_screen.png
+.marc_cmd.wav
 
 # Secrets / auth / per-run state
 .spotify_cache

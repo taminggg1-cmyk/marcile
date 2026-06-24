@@ -5,7 +5,10 @@ is recorded and transcribed by faster-whisper (accurate, GPU).
 Protocol (clean stdout; library noise goes to stderr):
   READY            -> models loaded, mic open
   WAKE             -> heard the wake word
-  CMD: <text>      -> transcribed command after waking
+  PARTIAL: <text>  -> live (rough) words while you speak
+  CMD: <text>      -> locally transcribed command (whisper mode)
+  AUDIO: <path>    -> recorded command wav for marcille to transcribe (gemini mode)
+  NOCMD            -> woke but nothing usable was said
   ERR <msg>        -> fatal problem (e.g. no microphone)
 marcille.py reads these lines and drives her reply.
 """
@@ -27,6 +30,10 @@ def emit(msg):
 HERE = os.path.dirname(os.path.abspath(__file__))
 VOSK_DIR = os.path.join(HERE, "vosk_model", "vosk-model-small-en-us-0.15")
 SR = 16000
+# STT backend: "gemini" -> just record the clip + emit AUDIO:<path> (marcille.py
+# transcribes it via Gemini: free, multilingual, far better than local whisper here).
+# "whisper" -> transcribe locally and emit CMD:<text> (offline fallback).
+STT_MODE = os.environ.get("MARC_STT", "whisper").lower()
 # The small English model has no word "marcille". These IN-VOCABULARY soundalikes
 # are what it actually emits when you say "Marcille". We restrict the wake
 # recognizer's GRAMMAR to just these (+ [unk]) so the model is strongly biased to
@@ -110,7 +117,6 @@ def main():
     import numpy as np
     import sounddevice as sd
     from vosk import Model, KaldiRecognizer
-    from faster_whisper import WhisperModel
 
     try:
         vosk_model = Model(VOSK_DIR)
@@ -121,12 +127,16 @@ def main():
     except Exception as e:
         emit("ERR vosk: " + repr(e))
         return
-    # Best STT that runs here: GPU distil-large-v3 if possible, else CPU small.
-    # (distil-large-v3 downloads ~1.5GB once on first run.)
-    whisper = _load_whisper(WhisperModel)
-    if whisper is None:
-        emit("ERR whisper: no working backend (GPU or CPU)")
-        return
+    # In gemini mode the clip is transcribed by marcille.py (cloud) -> no local STT
+    # model needed here (faster startup, no GPU/CUDA, no 1.5GB download). In whisper
+    # mode load the best local backend: GPU distil-large-v3 if possible, else CPU small.
+    whisper = None
+    if STT_MODE != "gemini":
+        from faster_whisper import WhisperModel
+        whisper = _load_whisper(WhisperModel)
+        if whisper is None:
+            emit("ERR whisper: no working backend (GPU or CPU)")
+            return
     try:
         stream = sd.RawInputStream(samplerate=SR, blocksize=4000,
                                    dtype="int16", channels=1)
@@ -167,6 +177,20 @@ def main():
                     break
         if not started:
             return None
+        if STT_MODE == "gemini":
+            # save the clip as a 16k mono 16-bit wav; marcille.py transcribes it.
+            import wave
+            pcm16 = np.concatenate(frames).astype(np.int16)
+            wav_path = os.path.join(HERE, ".marc_cmd.wav")
+            try:
+                with wave.open(wav_path, "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(SR)
+                    w.writeframes(pcm16.tobytes())
+            except Exception:
+                return None
+            return ("AUDIO", wav_path)
         # MUST be contiguous float32 -- float64 can crash CTranslate2 natively
         audio = np.ascontiguousarray(np.concatenate(frames) / 32768.0, dtype=np.float32)
         # beam_size 5 + vocab hint + VAD filter = much better accuracy on short commands
@@ -175,7 +199,7 @@ def main():
             initial_prompt=COMMAND_HINT, condition_on_previous_text=False,
             vad_filter=True)
         text = " ".join(s.text for s in segs).strip()
-        return text or None
+        return ("CMD", text) if text else None
 
     import traceback
     last_wake = 0.0
@@ -198,16 +222,18 @@ def main():
             if woke:
                 last_wake = time.time()
                 emit("WAKE")
-                cmd = None
+                res = None
                 try:
-                    cmd = record_command()
+                    res = record_command()
                 except Exception:
                     sys.stderr.write("record_command error:\n" + traceback.format_exc())
                     sys.stderr.flush()
                 rec.Reset()
                 last_wake = time.time()        # restart debounce after the command
-                if cmd:
-                    emit("CMD: " + cmd)
+                if res and res[0] == "AUDIO":
+                    emit("AUDIO: " + res[1])
+                elif res and res[0] == "CMD" and res[1]:
+                    emit("CMD: " + res[1])
                 else:
                     emit("NOCMD")              # heard the wake word but no clear command
         except Exception:

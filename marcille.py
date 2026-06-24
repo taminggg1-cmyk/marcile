@@ -1048,11 +1048,12 @@ class Brain:
     def has_gemini(self):
         return bool(self.gemini_key)
 
-    def _gemini(self, system, contents, images=None, timeout=60, max_tokens=400, temp=0.7):
+    def _gemini(self, system, contents, images=None, audio=None, timeout=60, max_tokens=400, temp=0.7):
         """One call to the Gemini API (pure urllib, no SDK). `contents` = list of
-        {"role": "user"|"model", "text": ...}; `images` = base64 PNG strings attached
-        to the LAST turn. Returns (text, error). thinkingBudget=0 keeps 2.5-flash
-        snappy and stops 'thinking' from eating the whole output budget."""
+        {"role": "user"|"model", "text": ...}; `images` = base64 PNG strings and
+        `audio` = (mime_type, base64) tuples attached to the LAST turn. Returns
+        (text, error). thinkingBudget=0 keeps 2.5-flash snappy and stops 'thinking'
+        from eating the whole output budget."""
         import urllib.request, urllib.error
         if not self.gemini_key:
             return None, "no gemini key"
@@ -1063,6 +1064,10 @@ class Brain:
             for b64 in images:
                 conv[-1]["parts"].append(
                     {"inline_data": {"mime_type": "image/png", "data": b64}})
+        if audio and conv:
+            for mime, b64 in audio:
+                conv[-1]["parts"].append(
+                    {"inline_data": {"mime_type": mime, "data": b64}})
         body = {"contents": conv,
                 "generationConfig": {"temperature": temp, "maxOutputTokens": max_tokens,
                                      "thinkingConfig": {"thinkingBudget": 0}}}
@@ -1091,6 +1096,32 @@ class Brain:
         parts = ((cands[0].get("content") or {}).get("parts")) or []
         text = "".join(p.get("text", "") for p in parts).strip()
         return (text or None), (None if text else "Gemini returned nothing")
+
+    def transcribe_audio(self, wav_path):
+        """Speech-to-text for a recorded voice command, via Gemini (free, multilingual
+        — far better than local whisper on this machine). Returns the spoken text, or
+        None if there's no key, the call fails, or nothing intelligible was said."""
+        if not self.gemini_key:
+            return None
+        try:
+            import base64
+            with open(wav_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+        except Exception:
+            return None
+        sysp = ("You are a speech-to-text transcriber. Transcribe the short spoken "
+                "command in the audio EXACTLY, in whatever language is spoken. Output "
+                "ONLY the words said — no quotes, no translation, no notes. If the audio "
+                "is silent or unintelligible, output the single word NONE.")
+        text, err = self._gemini(
+            sysp, [{"role": "user", "text": "Transcribe this audio."}],
+            audio=[("audio/wav", b64)], max_tokens=120, temp=0.0)
+        if not text:
+            return None
+        t = text.strip().strip('"').strip()
+        if not t or t.strip(".!? ").upper() == "NONE":
+            return None
+        return t
 
     def gemini_chat(self, user_text, system=None):
         """In-character conversation via Gemini. Shares the same rolling history as
@@ -2446,11 +2477,15 @@ class Marcille:
         if self.voice_proc and self.voice_proc.poll() is None:
             return
         try:
+            venv = dict(os.environ)
+            # Gemini STT (free, multilingual, far better than local whisper here) when a
+            # key is set; otherwise the listener falls back to local whisper offline.
+            venv["MARC_STT"] = "gemini" if self.brain.has_gemini() else "whisper"
             self.voice_proc = subprocess.Popen(
                 [RVC_PY, VOICE_LISTEN],
                 stdout=subprocess.PIPE,
                 stderr=open(os.path.join(HERE, "voice_listen.log"), "w"),
-                text=True, cwd=HERE,
+                text=True, cwd=HERE, env=venv,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except Exception:
             self.voice_proc = None
@@ -2482,6 +2517,12 @@ class Marcille:
             elif line.startswith("CMD:"):
                 txt = line[4:].strip()
                 self.root.after(0, lambda t=txt: self.handle_voice_command(t))
+            elif line.startswith("AUDIO:"):
+                path = line[6:].strip()
+                self.root.after(0, lambda: self.show_user_caption(
+                    "…", live=True, hold=8.0))
+                threading.Thread(target=self._transcribe_voice,
+                                 args=(path,), daemon=True).start()
             elif line.startswith("ERR"):
                 self.voice_listening = False
                 self.root.after(0, lambda: self.say_bubble(
@@ -2507,6 +2548,23 @@ class Marcille:
             "Hmm, I didn't catch that — say it again?",
             "Sorry, I didn't hear that clearly. Once more?",
             "I'm listening, but I missed it — try again!"]), force=True)
+
+    def _transcribe_voice(self, path):
+        """Worker: send a recorded command clip to Gemini STT, then act on the text.
+        Runs off the reader thread (it's a network call). Cleans up the temp wav."""
+        text = None
+        try:
+            text = self.brain.transcribe_audio(path)
+        except Exception:
+            text = None
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        if text:
+            self.root.after(0, lambda t=text: self.handle_voice_command(t))
+        else:
+            self.root.after(0, self._voice_nocmd)
 
     # ---- fast deterministic skills (instant, reliable: the "assistant" core) ---
     # These run BEFORE the LLM so common requests are snappy and never misjudged.
