@@ -1,0 +1,14 @@
+Desktop Pet - art credits
+==========================
+
+Black cat sprites (Black-Idle.png, Black-Run.png):
+    "Black Cat Sprites" by carysaurus
+    https://carysaurus.itch.io/black-cat-sprites
+    Used per the asset license: free for personal & commercial projects,
+    credit given, not redistributed or resold.
+
+Earlier/unused experiments in assets/:
+    "Cat sprites" by Shepardskin (OpenGameArt, CC0)
+    "Cat & Dog - Free Sprites" (OpenGameArt / LPC, CC0)
+    "Tiny Kitten Game Sprite" (OpenGameArt, CC0)
+    "Cat Fighter Sprite Sheet" by dogchicken (OpenGameArt, CC-BY 3.0)

@@ -1,0 +1,21 @@
+# Python venv & caches (regenerable, large)
+rvc_env/
+__pycache__/
+*.pyc
+
+# Downloaded model weights (large, auto-redownloaded)
+vosk_model/
+miku_model/
+rvc_models/
+
+# Runtime state & logs (mutable, not code)
+*.log
+voice_err.txt
+voice_out.txt
+.marc_screen.png
+
+# Secrets / auth / per-run state
+.spotify_cache
+marcille_config.json
+marcille_memory.json
+tasks.json
