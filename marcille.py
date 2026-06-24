@@ -2495,9 +2495,10 @@ class Marcille:
             return
         try:
             venv = dict(os.environ)
-            # Gemini STT (free, multilingual, far better than local whisper here) when a
-            # key is set; otherwise the listener falls back to local whisper offline.
-            venv["MARC_STT"] = "gemini" if self.brain.has_gemini() else "whisper"
+            # STT engine via cfg["voice_stt"]: "whisper" = local distil-large-v3 on the
+            # GPU (free, UNLIMITED, offline, ~3.7s, English); "gemini" = cloud (accurate,
+            # multilingual, but a tiny daily free quota). Default to local whisper.
+            venv["MARC_STT"] = self.cfg.get("voice_stt", "whisper")
             self.voice_proc = subprocess.Popen(
                 [RVC_PY, VOICE_LISTEN],
                 stdout=subprocess.PIPE,

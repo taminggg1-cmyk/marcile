@@ -95,9 +95,13 @@ def _load_whisper(WhisperModel):
     cuda = _enable_cuda_dlls()
     attempts = []
     if cuda:
-        attempts += [("distil-large-v3", "cuda", "float16"),
-                     ("distil-large-v3", "cuda", "int8_float16")]
-    attempts.append(("small", "cpu", "int8"))
+        # int8_float16 first: it fits this 4GB GPU (~0.7GB) and is fast + accurate
+        # (~3.7s/clip). float16 is sharper but needs ~1.5GB (only on bigger GPUs).
+        attempts += [("distil-large-v3", "cuda", "int8_float16"),
+                     ("distil-large-v3", "cuda", "float16")]
+    # CPU fallbacks: distil-large-v3 (accurate but ~3-4x slower) then small (last resort).
+    attempts += [("distil-large-v3", "cpu", "int8"),
+                 ("small", "cpu", "int8")]
     probe = np.zeros(16000, dtype=np.float32)
     for name, dev, ct in attempts:
         try:
