@@ -2780,7 +2780,7 @@ class Marcille:
         # subtitle bar, so mis-hearings are obvious. Hold a beat before acting.
         self.show_emote("aha", 36)
         self.show_user_caption(text, live=False, hold=5.0)
-        self.root.after(850, lambda t=text: self._dispatch_command(t))
+        self.root.after(400, lambda t=text: self._dispatch_command(t))
 
     def _dispatch_command(self, text):
         # learn name / explicit "remember ..." facts (may answer on its own)

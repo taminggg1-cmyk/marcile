@@ -47,6 +47,10 @@ SR = 16000
 # transcribes it via Gemini: free, multilingual, far better than local whisper here).
 # "whisper" -> transcribe locally and emit CMD:<text> (offline fallback).
 STT_MODE = os.environ.get("MARC_STT", "whisper").lower()
+# Local STT model. distil-small.en = ~1.2s/clip on this GPU, English, accuracy matches
+# the big model on clear commands. For more accuracy on hard/accented audio bump to
+# distil-large-v3 (~5s) via the MARC_WHISPER env var.
+WHISPER_MODEL = os.environ.get("MARC_WHISPER", "distil-small.en")
 # The small English model has no word "marcille". These IN-VOCABULARY soundalikes
 # are what it actually emits when you say "Marcille". We restrict the wake
 # recognizer's GRAMMAR to just these (+ [unk]) so the model is strongly biased to
@@ -95,12 +99,12 @@ def _load_whisper(WhisperModel):
     cuda = _enable_cuda_dlls()
     attempts = []
     if cuda:
-        # int8_float16 first: it fits this 4GB GPU (~0.7GB) and is fast + accurate
-        # (~3.7s/clip). float16 is sharper but needs ~1.5GB (only on bigger GPUs).
-        attempts += [("distil-large-v3", "cuda", "int8_float16"),
-                     ("distil-large-v3", "cuda", "float16")]
-    # CPU fallbacks: distil-large-v3 (accurate but ~3-4x slower) then small (last resort).
-    attempts += [("distil-large-v3", "cpu", "int8"),
+        # GPU int8_float16 first: distil-small.en is ~1.2s/clip here and barely sips
+        # VRAM, so it also won't fight Miku RVC for the GPU.
+        attempts += [(WHISPER_MODEL, "cuda", "int8_float16"),
+                     (WHISPER_MODEL, "cuda", "float16")]
+    # CPU fallbacks: the chosen model on CPU, then plain small as a last resort.
+    attempts += [(WHISPER_MODEL, "cpu", "int8"),
                  ("small", "cpu", "int8")]
     probe = np.zeros(16000, dtype=np.float32)
     for name, dev, ct in attempts:
@@ -164,7 +168,7 @@ def main():
 
     emit("READY")
 
-    def record_command(max_sec=6.0, silence_sec=1.2, sil_thresh=420):
+    def record_command(max_sec=6.0, silence_sec=0.9, sil_thresh=420):
         frames, started, silent, t0 = [], False, 0.0, time.time()
         # No live word-by-word caption: the small vosk model guessed wrong ~95% of
         # the time. We just capture audio here (VAD-trimmed); the ACCURATE transcript
@@ -200,9 +204,9 @@ def main():
         audio = np.ascontiguousarray(np.concatenate(frames) / 32768.0, dtype=np.float32)
         # beam_size 5 + vocab hint + VAD filter = much better accuracy on short commands
         segs, _ = whisper.transcribe(
-            audio, language="en", beam_size=5, temperature=0.0,
+            audio, language="en", beam_size=1, temperature=0.0,
             initial_prompt=COMMAND_HINT, condition_on_previous_text=False,
-            vad_filter=True)
+            vad_filter=False)
         text = " ".join(s.text for s in segs).strip()
         return ("CMD", text) if text else None
 
