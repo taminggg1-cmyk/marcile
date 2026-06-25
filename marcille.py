@@ -1980,6 +1980,8 @@ class Marcille:
         m.add_command(label="💞 What you remember", command=self.show_memory)
         self.voiceear_idx = m.index("end") + 1
         m.add_command(label="ears", command=self.toggle_voice)
+        self.caption_idx = m.index("end") + 1
+        m.add_command(label="caption", command=self.toggle_caption)
         self.shell_idx = m.index("end") + 1
         m.add_command(label="shell", command=self.toggle_task_shell)
         self.intent_idx = m.index("end") + 1
@@ -2085,6 +2087,10 @@ class Marcille:
             self.voiceear_idx,
             label=("🎤 Wake word: ON (say 'Marcille')" if listening
                    else "🎤 Wake word: off"))
+        self.menu.entryconfigure(
+            self.caption_idx,
+            label=("💬 Voice caption: ON" if self.cfg.get("voice_caption", True)
+                   else "💬 Voice caption: off"))
         self.menu.entryconfigure(
             self.shell_idx,
             label=("🐚 Task shell: ON (can run commands)" if self.allow_shell
@@ -2230,6 +2236,18 @@ class Marcille:
         else:
             self.show_emote("normal", 30)
             self.say_bubble("Alright, I won't peek at your screen anymore.", force=True)
+
+    def toggle_caption(self):
+        new = not self.cfg.get("voice_caption", True)
+        self.cfg["voice_caption"] = new
+        save_config(self.cfg)
+        if new:
+            self.show_emote("happy", 30)
+            self.say_bubble("I'll show your words on screen again~", force=True)
+        else:
+            self._hide_user_caption()
+            self.show_emote("normal", 30)
+            self.say_bubble("Okay, subtitles off.", force=True)
 
     def show_memory(self):
         """Show what Marcille remembers about you."""
@@ -3728,6 +3746,8 @@ class Marcille:
         """Show what the user said as a subtitle bar at the bottom-center of the
         screen. live=True (grey, while speaking) vs final (bright, after whisper)."""
         if not text:
+            return
+        if not self.cfg.get("voice_caption", True):
             return
         self._ensure_caption_win()
         self.caption_lbl.configure(
