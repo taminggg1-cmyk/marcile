@@ -1,0 +1,28 @@
+# Marcille — Python dependencies
+# Platform: Windows 10/11 only (uses winsound, ctypes.windll, os.startfile).
+#
+# Install the core with:   pip install -r requirements.txt
+# Everything below the "core" block is OPTIONAL — uncomment what you want.
+
+# ---- Core (required to run the desktop pet) ----
+pillow            # image/sprite rendering. tkinter is bundled with Python on Windows.
+
+# ---- Optional: nicer text-to-speech voice ----
+# edge-tts        # Microsoft Edge neural voices
+
+# ---- Optional: Spotify control (needs your own Spotify app credentials) ----
+# spotipy
+
+# ---- Optional: wake-word + voice commands ("Marcille ...") ----
+# vosk            # offline wake-word recognition (also needs a downloaded Vosk model)
+# sounddevice     # microphone capture
+# numpy
+# faster-whisper  # speech-to-text for the command after the wake word
+
+# ---- Optional: custom RVC voice (heavy; see miku_rvc.py) ----
+# torch
+
+# ---- Optional: local AI brain ----
+# No pip package — install Ollama (https://ollama.com) and pull:
+#   ollama pull gemma3:4b
+#   ollama pull qwen2.5:7b
