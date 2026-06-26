@@ -1,11 +1,11 @@
 # Marcille — Python dependencies
-# Platform: Windows 10/11 only (uses winsound, ctypes.windll, os.startfile).
+# Platforms: Windows 10/11 (full), Linux & macOS (experimental — see README).
 #
 # Install the core with:   pip install -r requirements.txt
 # Everything below the "core" block is OPTIONAL — uncomment what you want.
 
-# ---- Core (required to run the desktop pet) ----
-pillow            # image/sprite rendering. tkinter is bundled with Python on Windows.
+# ---- Core (required to run the companion) ----
+pillow            # image/sprite rendering. tkinter ships with Python (Linux: apt install python3-tk).
 
 # ---- Optional: nicer text-to-speech voice ----
 # edge-tts        # Microsoft Edge neural voices

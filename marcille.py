@@ -27,7 +27,6 @@ import random
 import ctypes
 import asyncio
 import datetime
-import winsound
 import tempfile
 import shutil
 import threading
@@ -36,6 +35,69 @@ import webbrowser
 import tkinter as tk
 from tkinter import simpledialog, scrolledtext
 from PIL import Image, ImageTk
+
+# ---- platform compatibility -------------------------------------------------
+# Marcille was born on Windows but the core (the character, her animation,
+# moods and chatter) is pure tkinter + Pillow, which run anywhere. The
+# Windows-only extras (system sounds, idle detection, media keys, app launch,
+# battery, lock-screen) are isolated here and degrade gracefully elsewhere.
+IS_WINDOWS = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+
+if IS_WINDOWS:
+    import winsound
+    user32 = ctypes.windll.user32
+else:
+    winsound = None
+    user32 = None
+
+
+def open_external(target):
+    """Open a file / app / URL with the OS default handler, cross-platform."""
+    try:
+        if IS_WINDOWS:
+            os.startfile(target)              # noqa: cross-platform guarded above
+        elif IS_MAC:
+            subprocess.Popen(["open", target])
+        else:
+            subprocess.Popen(["xdg-open", target])
+        return True
+    except Exception:
+        return False
+
+
+def beep():
+    """A short attention sound, best-effort on every platform."""
+    if IS_WINDOWS:
+        try:
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:
+            pass
+    else:
+        try:
+            print("\a", end="", flush=True)   # terminal bell if available
+        except Exception:
+            pass
+
+
+def lock_screen():
+    """Lock the session, cross-platform best-effort."""
+    try:
+        if IS_WINDOWS:
+            ctypes.windll.user32.LockWorkStation()
+        elif IS_MAC:
+            subprocess.Popen(["pmset", "displaysleepnow"])
+        else:
+            for cmd in (["loginctl", "lock-session"], ["xdg-screensaver", "lock"],
+                        ["gnome-screensaver-command", "-l"]):
+                try:
+                    if subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL).returncode == 0:
+                        return
+                except FileNotFoundError:
+                    continue
+    except Exception:
+        pass
 
 TRANSPARENT = "#ff00ff"
 SCALE = 1
@@ -94,7 +156,8 @@ EMOTIONS = ["normal", "blink", "happy", "panic", "casting", "sleepy",
             "thinking", "dizzy", "clumsy"]
 
 VK = dict(play=0xB3, next=0xB0, prev=0xB1, vup=0xAF, vdown=0xAE, mute=0xAD)
-user32 = ctypes.windll.user32
+# Linux media-key equivalents via `playerctl` (optional), keyed like VK above.
+PLAYERCTL = {0xB3: "play-pause", 0xB0: "next", 0xB1: "previous"}
 
 
 # ---- in-character lines ----------------------------------------------------
@@ -169,11 +232,23 @@ def pick(key):
 
 # ---- input helpers ---------------------------------------------------------
 def tap_key(vk):
-    user32.keybd_event(vk, 0, 0, 0)
-    user32.keybd_event(vk, 0, 2, 0)
+    if IS_WINDOWS:
+        user32.keybd_event(vk, 0, 0, 0)
+        user32.keybd_event(vk, 0, 2, 0)
+        return
+    # Linux: route media keys through playerctl if it's installed.
+    action = PLAYERCTL.get(vk)
+    if action:
+        try:
+            subprocess.run(["playerctl", action],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
 
 
 def any_typing():
+    if not IS_WINDOWS:
+        return False  # no global key-state probe off Windows; assume not typing
     for vk in list(range(0x41, 0x5B)) + [0x20, 0x0D, 0x08]:
         if user32.GetAsyncKeyState(vk) & 0x8000:
             return True
@@ -187,12 +262,21 @@ class _LASTINPUTINFO(ctypes.Structure):
 def idle_seconds():
     """Seconds since the user last touched the mouse or keyboard (whole system,
     not just our window). Used to tell APART 'you stepped away' from 'active'."""
+    if IS_WINDOWS:
+        try:
+            info = _LASTINPUTINFO()
+            info.cbSize = ctypes.sizeof(info)
+            if user32.GetLastInputInfo(ctypes.byref(info)):
+                millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime
+                return max(0.0, millis / 1000.0)
+        except Exception:
+            pass
+        return 0.0
+    # Linux: `xprintidle` reports idle ms if installed; otherwise unknown (0).
     try:
-        info = _LASTINPUTINFO()
-        info.cbSize = ctypes.sizeof(info)
-        if user32.GetLastInputInfo(ctypes.byref(info)):
-            millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime
-            return max(0.0, millis / 1000.0)
+        out = subprocess.run(["xprintidle"], capture_output=True, text=True)
+        if out.returncode == 0:
+            return max(0.0, int(out.stdout.strip()) / 1000.0)
     except Exception:
         pass
     return 0.0
@@ -207,6 +291,8 @@ def startup_bat_path():
 # ---- situational awareness --------------------------------------------------
 def _process_name(pid):
     """Executable basename for a process id (Windows), lower-cased."""
+    if not IS_WINDOWS:
+        return ""
     try:
         k32 = ctypes.windll.kernel32
         h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
@@ -226,6 +312,16 @@ def _process_name(pid):
 
 def foreground_app():
     """(exe_name, window_title) of the focused window, both lower-cased."""
+    if not IS_WINDOWS:
+        # Linux: best-effort active-window title via xdotool (optional).
+        try:
+            out = subprocess.run(["xdotool", "getactivewindow", "getwindowname"],
+                                 capture_output=True, text=True)
+            if out.returncode == 0:
+                return ("", out.stdout.strip().lower())
+        except Exception:
+            pass
+        return ("", "")
     try:
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
@@ -251,6 +347,25 @@ class _PowerStatus(ctypes.Structure):
 
 def battery_status():
     """{'has_batt','pct','charging'} or None if it can't be read."""
+    if not IS_WINDOWS:
+        # Linux: read /sys/class/power_supply (no dependency).
+        try:
+            import glob
+            bats = glob.glob("/sys/class/power_supply/BAT*")
+            if not bats:
+                return {"has_batt": False, "pct": None, "charging": True}
+            base = bats[0]
+            with open(os.path.join(base, "capacity")) as f:
+                pct = int(f.read().strip())
+            charging = True
+            try:
+                with open(os.path.join(base, "status")) as f:
+                    charging = f.read().strip().lower() != "discharging"
+            except OSError:
+                pass
+            return {"has_batt": True, "pct": pct, "charging": charging}
+        except Exception:
+            return None
     try:
         s = _PowerStatus()
         if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
@@ -520,12 +635,27 @@ class Voice:
                 pass
 
     def _play(self, path):
-        mci = ctypes.windll.winmm.mciSendStringW
-        mci("close marcvoice", None, 0, 0)
-        typ = "waveaudio" if path.lower().endswith(".wav") else "mpegvideo"
-        if mci(f'open "{path}" type {typ} alias marcvoice', None, 0, 0) == 0:
-            mci("play marcvoice wait", None, 0, 0)
+        if IS_WINDOWS:
+            mci = ctypes.windll.winmm.mciSendStringW
             mci("close marcvoice", None, 0, 0)
+            typ = "waveaudio" if path.lower().endswith(".wav") else "mpegvideo"
+            if mci(f'open "{path}" type {typ} alias marcvoice', None, 0, 0) == 0:
+                mci("play marcvoice wait", None, 0, 0)
+                mci("close marcvoice", None, 0, 0)
+            return
+        # macOS / Linux: hand off to whatever audio player is installed.
+        players = (["afplay", path],) if IS_MAC else (
+            ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", path],
+            ["paplay", path], ["aplay", path], ["mpg123", "-q", path])
+        for cmd in players:
+            try:
+                if subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode == 0:
+                    return
+            except FileNotFoundError:
+                continue
+            except Exception:
+                return
 
     # ---- Miku RVC voice conversion ----
     def set_miku(self, on):
@@ -1342,7 +1472,8 @@ class Brain:
             webbrowser.open(exe if low.startswith("http") else "https://" + exe)
             return
         try:
-            os.startfile(exe)
+            if not open_external(exe):
+                subprocess.Popen(exe)
         except Exception:
             subprocess.Popen(exe)
 
@@ -1843,7 +1974,14 @@ class Marcille:
         self.root = tk.Tk()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
-        self.root.attributes("-transparentcolor", TRANSPARENT)
+        # Color-key transparency (the clean "cutout" look) is a Windows/macOS Tk
+        # feature. On Linux it isn't supported, so we degrade gracefully: keep
+        # her on a flat key-color backdrop (looks best under a compositing WM).
+        self._transparent_ok = True
+        try:
+            self.root.attributes("-transparentcolor", TRANSPARENT)
+        except tk.TclError:
+            self._transparent_ok = False
         self.root.config(bg=TRANSPARENT)
 
         self.cfg = load_config()
@@ -2387,17 +2525,19 @@ class Marcille:
     }
 
     def _launch(self, exe):
-        """Robustly launch an app/exe/URI by name on Windows. os.startfile uses
+        """Robustly launch an app/exe/URI by name. On Windows os.startfile uses
         ShellExecute, which finds chrome/spotify/etc. via the App Paths registry
-        (plain subprocess.Popen does NOT and fails for those)."""
+        (plain subprocess.Popen does NOT and fails for those). Elsewhere we fall
+        back to the desktop's default opener (xdg-open / open)."""
         if exe.endswith(":"):                  # URI scheme, e.g. ms-settings:
-            os.startfile(exe)
+            open_external(exe)
             return
         if exe in ("cmd", "powershell", "wt"):  # need their own console window
             subprocess.Popen(exe)
             return
         try:
-            os.startfile(exe)                  # ShellExecute: App Paths + PATH + assoc
+            if not open_external(exe):         # ShellExecute: App Paths + PATH + assoc
+                subprocess.Popen(exe)
         except Exception:
             subprocess.Popen(exe)              # last resort for bare exes on PATH
 
@@ -2417,7 +2557,7 @@ class Marcille:
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content + "\n")
-            os.startfile(path)
+            open_external(path)
             return "Done — I jotted that down on your Desktop!"
         except Exception:
             return "I tried to write that down but couldn't save the file, sorry!"
@@ -2640,7 +2780,7 @@ class Marcille:
         # --- lock screen ---
         if re.search(r"\block\b.*\b(screen|computer|pc|workstation)\b", t) or t == "lock":
             self._skill_emote("casting")
-            self.root.after(400, lambda: ctypes.windll.user32.LockWorkStation())
+            self.root.after(400, lock_screen)
             return "Locking up — see you in a moment!"
 
         # --- screenshot ---
@@ -3654,10 +3794,7 @@ class Marcille:
         self.heart_timer = 0
         self.bang_timer = 40
         self.show_emote("surprised", 30)
-        try:
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-        except Exception:
-            pass
+        beep()
         line = pick("remind_fire").format(task=task)
         self.say_bubble(line, force=True)
 
